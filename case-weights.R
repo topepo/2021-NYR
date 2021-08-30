@@ -3,8 +3,13 @@ library(rules)
 library(lubridate)
 library(timeDate)
 library(stringr)
-library(doMC)
-registerDoMC(cores = 20)
+library(furrr)
+library(Cubist)
+library(glmnet)
+
+options(future.rng.onMisuse="ignore")
+plan(multicore)
+
 tidymodels_prefer()
 theme_set(theme_bw())
 
@@ -60,116 +65,111 @@ cubist_recipe <-
 glmnet_recipe <- 
   cubist_recipe %>% 
   step_dummy(all_nominal_predictors()) %>% 
-  step_zv(all_predictors()) %>% 
-  step_normalize(all_numeric_predictors())
+  step_zv(all_predictors(), -case_weights) %>% 
+  step_normalize(all_numeric_predictors(), -case_weights)
 
 # ------------------------------------------------------------------------------
 
 fit_cubist <- function(df) {
+  library(Cubist)
   cubist(x = df[, !(names(df) %in% c("ridership", "case_weight"))],
-         y = df$ridersnip,
+         y = df$ridership,
          weights = df$case_weights,
          committees = 50)
 }
 
-cubist_res <- 
+assess_cubist <- function(dat, model) {
+  library(tidymodels, quietly = TRUE)
+  x <- dat %>% select(-ridership)
+  preds <- predict(model, x)
+  tibble(.pred = preds, ridership = dat$ridership) %>% 
+    rmse(ridership, .pred)
+}
+
+cubist_weighted <- 
   chi_rs %>% 
-  slice(1:5) %>% 
   mutate(
     recipe = map(splits, ~ prep(cubist_recipe, analysis(.x))),
     analysis  = map(recipe, ~ juice(.x)),
-    model = map(analysis, 
-                ~ cubist(x = .x[, names(.x) %in% c("ridership", "case_weight")]))
-  )
-
-
-cubist_spec <- 
-  cubist_rules(committees = tune(), neighbors = tune()) %>% 
-  set_engine("Cubist") 
-
-cubist_workflow <- 
-  workflow() %>% 
-  add_recipe(cubist_recipe) %>% 
-  add_model(cubist_spec) 
-
-cubist_grid <-
-  tidyr::crossing(committees = c(1:9, (1:5) * 10),
-                  neighbors = c(0, 3, 6, 9)) 
-cubist_tune <- 
-  tune_grid(cubist_workflow, resamples = chi_rs, grid = cubist_grid) 
-
-cubist_best <- select_best(cubist_tune, metric = "rmse")
-
-cubist_weighted_test <- 
-  cubist_workflow %>% 
-  finalize_workflow(cubist_best) %>% 
-  fit(chi_train) %>% 
-  predict(chi_test) %>% 
-  bind_cols(chi_test %>% select(date, ridership))%>% 
-  mutate(model = "cubist", method = "case weights", day = wday(date, label = TRUE))
-
-cubist_weighted <- 
-  cubist_tune %>% 
-  collect_metrics(summarize = FALSE) %>% 
-  filter(.metric == "rmse") %>% 
-  inner_join(cubist_best, by = c("committees", "neighbors", ".config")) %>% 
+    assessment = map2(recipe, splits, ~ bake(.x, assessment(.y))),
+    model = future_map(analysis, ~ fit_cubist(.x)),
+    rmse = future_map2(assessment, model, assess_cubist)
+  ) %>% 
+  select(id, rmse) %>% 
+  unnest(cols = rmse) %>% 
   inner_join(rs_dates, by = "id") %>% 
   select(date, rmse = .estimate) %>% 
   mutate(model = "cubist", method = "case weights")
 
 
+cubist_recipe_prepped <- prep(cubist_recipe)
+test_data <- cubist_recipe_prepped %>% bake(chi_test) %>%  select(-ridership)
+final_cubist <- fit_cubist(juice(cubist_recipe_prepped))
+cubist_weighted_test <-
+  tibble(
+    .pred = predict(final_cubist, test_data),
+    ridership = chi_test$ridership,
+    date = chi_test$date
+  ) %>% 
+  mutate(model = "cubist", method = "case weights", day = wday(date, label = TRUE))
+
 # ------------------------------------------------------------------------------
 
-glmnet_spec <- 
-  linear_reg(penalty = tune(), mixture = tune()) %>% 
-  set_mode("regression") %>% 
-  set_engine("glmnet") 
 
-glmnet_workflow <- 
-  workflow() %>% 
-  add_recipe(glmnet_recipe) %>% 
-  add_model(glmnet_spec) 
+fit_glmnet <- function(df) {
+  library(glmnet)
+  x <- df[, !(names(df) %in% c("ridership", "case_weights"))]
+  x <- as.matrix(x)
+  mod <- cv.glmnet(x, df$ridership, weights = df$case_weights)
+  
+  mod
+}
 
-glmnet_grid <-
-  tidyr::crossing(
-    penalty = 10 ^ seq(-6, -1, length.out = 20),
-    mixture = c(0.05, 0.2, 0.4, 0.6, 0.8, 1)
-  )
-
-glmnet_tune <- 
-  tune_grid(glmnet_workflow, resamples = chi_rs, grid = glmnet_grid) 
-
-
-glmnet_best <- select_best(glmnet_tune, metric = "rmse")
-
-glmnet_weighted_test <-
-  glmnet_workflow %>%
-  finalize_workflow(glmnet_best) %>%
-  fit(chi_train) %>%
-  predict(chi_test) %>%
-  bind_cols(chi_test %>% select(date, ridership)) %>%
-  mutate(
-    model = "glmnet",
-    method = "case weights",
-    day = wday(date, label = TRUE)
-  )
+assess_glmnet <- function(dat, model) {
+  library(tidymodels, quietly = TRUE)
+  library(glmnet)
+  x <- dat %>% select(-ridership, -case_weights)
+  x <- as.matrix(x)
+  preds <- predict(model, x)
+  tibble(.pred = preds[,1], ridership = dat$ridership) %>%
+    rmse(ridership, .pred)
+}
 
 glmnet_weighted <- 
-  glmnet_tune %>% 
-  collect_metrics(summarize = FALSE) %>% 
-  filter(.metric == "rmse") %>% 
-  inner_join(glmnet_best, by = c("penalty", "mixture", ".config")) %>% 
+  chi_rs %>% 
+  mutate(
+    recipe = map(splits, ~ prep(glmnet_recipe, analysis(.x))),
+    analysis  = map(recipe, ~ juice(.x)),
+    assessment = map2(recipe, splits, ~ bake(.x, assessment(.y))),
+    model = future_map(analysis, ~ fit_glmnet(.x)),
+    rmse = future_map2(assessment, model, assess_glmnet)
+  ) %>% 
+  select(id, rmse) %>% 
+  unnest(cols = rmse) %>% 
   inner_join(rs_dates, by = "id") %>% 
   select(date, rmse = .estimate) %>% 
   mutate(model = "glmnet", method = "case weights")
 
+
+glmnet_recipe_prepped <- prep(glmnet_recipe)
+test_data <- glmnet_recipe_prepped %>% bake(chi_test) %>%  select(-ridership, -case_weights)
+final_glmnet <- fit_glmnet(juice(glmnet_recipe_prepped))
+glmnet_weighted_test <-
+  tibble(
+    .pred = predict(final_glmnet, as.matrix(test_data))[,1],
+    ridership = chi_test$ridership,
+    date = chi_test$date
+  ) %>% 
+  mutate(model = "glmnet", method = "case weights", day = wday(date, label = TRUE))
+
+
 # ------------------------------------------------------------------------------
 
-all_data <- 
+case_weights <- 
   bind_rows(glmnet_weighted, cubist_weighted) %>% 
   filter(date > ymd("2020-04-01"))
-all_data_test <- bind_rows(glmnet_weighted_test, cubist_weighted_test)
+case_weights_test <- bind_rows(glmnet_weighted_test, cubist_weighted_test)
 
-save(all_data, all_data_test, file = "RData/all_data.RData")
+save(case_weights, case_weights_test, file = "RData/case_weights.RData")
 
 q("no")

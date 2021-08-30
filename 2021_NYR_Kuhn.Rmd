@@ -34,10 +34,13 @@ background-color: #F9F8F3
 
 ### `r rmarkdown::metadata$date`
 ]
+.pull-right[
+```{r pic, echo = FALSE, fig.align='center', out.width="100%"}
+knitr::include_graphics("jean-colet-rIRu0pmk9Dc-unsplash.jpeg")
+```
+]
 
 ```{r startup, include = FALSE}
-library(doMC)
-registerDoMC(cores = 20)
 library(tidymodels)
 library(readr)
 library(lubridate)
@@ -58,178 +61,268 @@ load("RData/chicago.RData")
 load("RData/all_data.RData")
 load("RData/covid_data.RData")
 load("RData/interactions.RData")
+load("RData/case_weights.RData")
+
+cols <-
+  c(
+    Sun = "#E41A1C",
+    Mon = "#377EB8",
+    Tue = "#377EB8",
+    Wed = "#377EB8",
+    Thu = "#377EB8",
+    Fri = "#377EB8",
+    Sat = "#E41A1C"
+  )
+ordering <-
+  c("all data", "covid data only", "interactions", "case weights")
 
 ```
 
-```{r import, include = FALSE, eval = FALSE}
-load("RData/stations.RData")
-stations <- 
-  stations %>% 
-  select(name, station_id)
+---
+# The data
 
-exclude <- c("Cermak-Chinatown", "95th/Dan Ryan", "Randolph/Wabash", "69th", 
-             "Morgan", "Cermak-McCormick Place", "Sox-35th", "79th", "87th", 
-             "63rd", "Madison/Wabash", "Conservatory", "Washington/Wabash", 
-             "Oakton-Skokie", "Homan")
+In _Feature Engineering and Selection_ ([`bookdown.org/max/FES`](https://bookdown.org/max/FES/)), we try to predict the number of people entering Chicago's Clark and Lake "L" station 14 days ahead of time. 
 
-raw_entries <-
-  # Downloaded on 2021-08-29
-  read_delim("entries.tsv", delim = "\t") %>%
-  select(-daytype, -stationname) %>%
-  ## In thousands
-  mutate(rides = rides/1000) %>%
-  mutate(date = mdy(date)) %>%
-  mutate(station_id = paste0("s_", station_id)) %>%
-  inner_join(stations, by = "station_id") %>%
-  select(name, rides, date) %>%
-  filter(!(name %in% exclude)) %>% 
-  pivot_wider(id_cols = "date", names_from = "name", values_from = "rides", values_fn = mean) %>% 
-  clean_names() %>% 
-  arrange(date)
-lags <- 
-  raw_entries %>%
-   mutate(real_date = date,
-          date = date + days(14)) %>%
-   select(-real_date)
-true_values <-
-   raw_entries %>%
-   dplyr::rename(ridership = clark_lake) %>%
-   select(date, ridership)
+Predictors: Lag 14 data from C&L and other stations, date-based features, weather, home game schedules, etc. 
 
-chicago <- full_join(true_values, lags, by = "date")
-chicago <- chicago[complete.cases(chicago),]
-```
+Notes: 
 
+* Data a re highly bimodal (weekend vs weekday) 
+* _Previously_, RMSE's around 1.8-2.0 (x rides/1000) were common. 
 
-```{r before-times}
-chicago %>%
+---
+# The Before Times
+
+```{r before-times, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series plot of the pre-pandemic data."}
+weekly_data <- 
+  chicago %>%
   slide_period_dfr(
     chicago$date, 
     .period = "week", 
     ~ tibble(date = min(.x$date), rides = sum(.x$ridership * 1000))
-  ) %>%
+  ) 
+
+weekly_data %>%
+  filter(date < ymd("2020-01-01")) %>% 
   ggplot(aes(date, rides)) +
   geom_line() + 
+  ylab("Weekly riders") + 
   scale_x_date(date_breaks = "5 years", date_minor_breaks = "1 year")
 ```
-```{r split}
-test_days <- ymd("2021-05-18") + days(0:13)
 
-chi_train <- chicago %>% filter(date < min(test_days))
-chi_test  <- chicago %>% filter(date >= min(test_days))
+
+---
+# Now
+
+```{r all-data, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series plot of the entire data set."}
+weekly_data %>%
+  ggplot(aes(date, rides)) +
+  geom_line() + 
+  ylab("Weekly riders") + 
+  scale_x_date(date_breaks = "5 years", date_minor_breaks = "1 year")
 ```
 
-```{r resamples}
-chi_rs <-
-  chi_train %>%
-  sliding_period(
-    index = "date",  
-    period = "week",
-    lookback = 52 * 18,
-    assess_stop = 2,
-    step = 2
+---
+# Now now
+
+```{r covid-data, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series plot of the data after 2020-04-01."}
+weekly_data %>%
+  filter(date >= ymd("2020-01-01")) %>% 
+  ggplot(aes(date, rides)) +
+  geom_line() + 
+  ylab("Weekly riders") + 
+  geom_vline(xintercept = ymd("2020-04-01"), lty = 2)
+```
+
+---
+# The problems
+
+Obviously, the patterns and scale are completely different. 
+
+The scale change is a subtle issue. 
+
+ - The data pre- and post-COVID are in the same units
+ 
+ - Should we compare root mean squared error values between data reaching 10<sup>5.5</sup> with data topping out at 10<sup>3.2</sup>(ish)?
+ 
+We'll also get a feel for the results via visual inspection of the predictions. 
+
+
+---
+# Potential solutions
+
+**Business as usual**: Pretend nothing is different and let the machine figure it out (WCGR?!?). 
+
+**Just COVID data**: Use data after 2020-04-01 with no further adjustments. 
+ 
+**Interactions**: Add features for change points based on events (e.g. Phase 1, kids 12-15, etc) and add interactions for these features with the lagged predictors. 
+
+**Case weights**: Use the full data set and give 10-fold higher weight to data prior to 2020-04-01.
+
+---
+# Modeling Details
+
+The data are resampled using rolling forecast origin with 2 week intervals. The analysis sets sizes for the full data set and the COVID only data set were about 1000 and 25 weeks, respectively. 
+
+Cubist and glmnet regression models are tuned and used for prediction. 
+
+Feature engineering used date-based features and lag-14 features. 
+
+```{r, eval = FALSE}
+# Change points for interactions
+chicago %>% 
+  mutate(  # times are approximate
+    change_1 = ifelse(date > ymd("2020-12-18"), 1, 0),  #  vac start
+    change_2 = ifelse(date > ymd("2021-01-08"), 1, 0),  #  2nd doses
+    change_3 = ifelse(date > ymd("2021-01-13"), 1, 0),  #  Hospitals and outpatient sites, 75 +
+    change_4 = ifelse(date > ymd("2021-01-25"), 1, 0),  #  phase 1b
+    change_5 = ifelse(date > ymd("2021-02-25"), 1, 0),  #  J&J available, phase 1B+
+    change_6 = ifelse(date > ymd("2021-04-10"), 1, 0)   #  approved for kids
   )
 ```
 
-
 ---
-layout: false
-class: inverse, middle, center
+# Resampling results
 
-# [`tidymodels.org`](https://www.tidymodels.org/)
-
-# _Tidy Modeling with R_ ([`tmwr.org`](https://www.tmwr.org/))
-
-
-
----
-# Ideas
-
-* BAU (business as usual)
-* Just new data
-* Interactions
-* Case weights
-
-
----
-# Feature engineering
-
-```{r recipe}
-# define a few holidays
-us_hol <- 
-  listHolidays() %>% 
-  str_subset("(^US)|(Easter)")
-
-cubst_recipe <- 
-  recipe(ridership ~ ., data = chi_train) %>% 
-  step_holiday(date, holidays = us_hol) %>% 
-  step_mutate(
-    day_after_thx   = ifelse(month(date) == 11 & day(date) == 26, 1, 0),
-    day_before_xmas = ifelse(month(date) == 12 & day(date) == 24, 1, 0),
-    day_after_xmas  = ifelse(month(date) == 12 & day(date) == 26, 1, 0),
-    new_years_eve    = ifelse(month(date) == 12 & day(date) == 30, 1, 0)
-  ) %>% 
-  step_date(date) %>% 
-  step_rm(date) 
-  
-reg_recipe <- 
-  cubst_recipe %>% 
-  step_zv(all_predictors()) %>% 
-  step_dummy(all_nominal_predictors()) %>% 
-  step_normalze(all_numeric_predictors())
-
-```
-
-
-```{r resampling}
-rs_results <- bind_rows(all_data, covid_data, interactions)
+```{r resampling, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=12, fig.height=5, fig.alt = "A time series plot of the resamplec RMSE values."}
+rs_results <- 
+  bind_rows(all_data, covid_data, interactions, case_weights) %>% 
+  mutate(method = factor(method, levels = ordering))
 
 rs_results %>% 
   filter(date >= ymd("2020-04-01")) %>% 
   ggplot(aes(date, rmse, col = method)) + 
   geom_point() +
   geom_line() +
-  facet_wrap(~ model)
+  facet_grid(model ~ method)
 ```
 
 
-```{r testing}
-cols <- c(Sun = "red", Mon = "black", Tue = "black", Wed = "black", Thu = "black", Fri = "black", Sat = "red")
+---
+# Test set results
 
-test_results <- bind_rows(all_data_test, covid_data_test, interactions_test)
+```{r testing-all-data, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
 
-min_rides <- min(chicago$ridership)
-
-test_results_trunc <- 
-  test_results %>% 
-  mutate(
-    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
-  )
+test_results <- 
+  bind_rows(all_data_test, covid_data_test, interactions_test, case_weights_test) %>% 
+  mutate(method = factor(method, levels = ordering))
 
 test_results %>% 
-  group_by(model, method) %>% 
-  rmse(ridership, .pred) %>% 
-  arrange(.estimate)
+  filter(method %in% c("all data")) %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y = .pred * 1000)) + 
+  facet_grid(model ~ method, drop = FALSE) +
+  geom_point(aes(y = ridership  * 1000, col = day)) +
+  scale_color_manual(values = cols) +
+  ylab("rides")
+```
+
+
+---
+# Test set results
+
+```{r testing-covid, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
+
+test_results <- 
+  bind_rows(all_data_test, covid_data_test, interactions_test, case_weights_test) %>% 
+  mutate(method = factor(method, levels = ordering))
+
+test_results %>% 
+  filter(method %in% c("all data", "covid data only")) %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y = .pred * 1000)) + 
+  facet_grid(model ~ method, drop = FALSE) +
+  geom_point(aes(y = ridership  * 1000, col = day)) +
+  scale_color_manual(values = cols) +
+  ylab("rides")
+```
+
+
+---
+# Test set results
+
+```{r testing-interactions, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
+
+test_results <- 
+  bind_rows(all_data_test, covid_data_test, interactions_test, case_weights_test) %>% 
+  mutate(method = factor(method, levels = ordering))
+
+test_results %>% 
+  filter(method %in% c("all data", "covid data only", "interactions")) %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y = .pred * 1000)) + 
+  facet_grid(model ~ method, drop = FALSE) +
+  geom_point(aes(y = ridership  * 1000, col = day)) +
+  scale_color_manual(values = cols) +
+  ylab("rides")
+```
+
+
+---
+# Test set results
+
+```{r testing-weights, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
+
+test_results <- 
+  bind_rows(all_data_test, covid_data_test, interactions_test, case_weights_test) %>% 
+  mutate(method = factor(method, levels = ordering))
 
 test_results %>% 
   ggplot(aes(date)) + 
   geom_line(aes(y = .pred * 1000)) + 
-  facet_grid(model ~ method) +
+  facet_grid(model ~ method, drop = FALSE) +
   geom_point(aes(y = ridership  * 1000, col = day)) +
-  scale_color_manual(values = cols)
+  scale_color_manual(values = cols) +
+  ylab("rides")
 ```
 
-```{r testing-rmse}
+
+---
+# Test set results (with some correction)
+
+```{r testing-corrected, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
+min_rides <- min(chicago$ridership)
+test_results %>% 
+  mutate(
+    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
+  ) %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y = .pred * 1000)) + 
+  facet_grid(model ~ method) +
+  geom_point(aes(y = ridership  * 1000, col = day)) +
+  scale_color_manual(values = cols) +
+  ylab("rides")
+```
+
+---
+# Sorted results (uncorrected)
+
+```{r testing-res}
 test_results %>% 
   group_by(model, method) %>% 
   rmse(ridership, .pred) %>% 
-  arrange(.estimate)
+  ungroup() %>% 
+  select(model, method, rmse = .estimate) %>% 
+  arrange(rmse)
 ```
+
+---
+# Conclusions
+
+* The resampling results indicate that the best strategy might change over time. 
+
+* The regularized linear regression results are appealing because of their simplicity and stability...
+
+... except for those wildly negative predictions. 
+
+* There are model-to-model differences so we should probably look at others too. 
 
 ---
 # Thanks
 
-Huge thanks to the R-Ladies organizers for the invitation to speak and putting up with my scheduling woes. 
+Huge thanks to the organizers for the invitation to speak and putting up with my scheduling woes. 
 
 Special thanks to the tidymodels team (Davis Vaughan, Julia Silge, and Hanna Frick) as well as Alison Hill.
+
+[Title picture](https://unsplash.com/photos/rIRu0pmk9Dc) by Jean Colet 
 

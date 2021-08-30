@@ -1,0 +1,247 @@
+
+R version 4.1.0 (2021-05-18) -- "Camp Pontanezen"
+Copyright (C) 2021 The R Foundation for Statistical Computing
+Platform: x86_64-apple-darwin17.0 (64-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+> library(tidymodels)
+Registered S3 method overwritten by 'tune':
+  method                   from   
+  required_pkgs.model_spec parsnip
+── Attaching packages ────────────────────────────────────── tidymodels 0.1.3 ──
+✔ broom        0.7.9      ✔ recipes      0.1.16
+✔ dials        0.0.9      ✔ rsample      0.1.0 
+✔ dplyr        1.0.7      ✔ tibble       3.1.3 
+✔ ggplot2      3.3.5      ✔ tidyr        1.1.3 
+✔ infer        1.0.0      ✔ tune         0.1.6 
+✔ modeldata    0.1.1      ✔ workflows    0.2.3 
+✔ parsnip      0.1.7      ✔ workflowsets 0.1.0 
+✔ purrr        0.3.4      ✔ yardstick    0.0.8 
+── Conflicts ───────────────────────────────────────── tidymodels_conflicts() ──
+✖ purrr::discard() masks scales::discard()
+✖ dplyr::filter()  masks stats::filter()
+✖ dplyr::lag()     masks stats::lag()
+✖ recipes::step()  masks stats::step()
+• Use tidymodels_prefer() to resolve common conflicts.
+> library(rules)
+
+Attaching package: ‘rules’
+
+The following object is masked from ‘package:dials’:
+
+    max_rules
+
+> library(lubridate)
+
+Attaching package: ‘lubridate’
+
+The following objects are masked from ‘package:base’:
+
+    date, intersect, setdiff, union
+
+> library(timeDate)
+> library(stringr)
+
+Attaching package: ‘stringr’
+
+The following object is masked from ‘package:recipes’:
+
+    fixed
+
+> library(furrr)
+Loading required package: future
+> library(Cubist)
+Loading required package: lattice
+> library(glmnet)
+Loading required package: Matrix
+
+Attaching package: ‘Matrix’
+
+The following objects are masked from ‘package:tidyr’:
+
+    expand, pack, unpack
+
+Loaded glmnet 4.1-2
+> 
+> options(future.rng.onMisuse="ignore")
+> plan(multicore)
+> 
+> tidymodels_prefer()
+> theme_set(theme_bw())
+> 
+> # ------------------------------------------------------------------------------
+> 
+> load("RData/chicago.RData")
+> 
+> # ------------------------------------------------------------------------------
+> 
+> test_days <- ymd("2021-05-18") + days(0:13)
+> 
+> chi_train <- chicago %>% filter(date < min(test_days))
+> chi_test  <- chicago %>% filter(date >= min(test_days))
+> 
+> min_rides <- min(chi_train$ridership)
+> 
+> chi_rs <-
++   chi_train %>%
++   sliding_period(
++     index = "date",  
++     period = "week",
++     lookback = 52 * 19.25,
++     assess_stop = 2,
++     step = 2
++   )
+> 
+> rs_dates <- 
++   chi_rs %>% 
++   mutate(date = map(splits, ~ min(assessment(.x)$date))) %>% 
++   select(id, date) %>% 
++   unnest(cols = date)
+> 
+> # ------------------------------------------------------------------------------
+> 
+> # define a few holidays
+> us_hol <- 
++   listHolidays() %>% 
++   str_subset("(^US)|(Easter)")
+> 
+> cubist_recipe <- 
++   recipe(ridership ~ ., data = chi_train) %>% 
++   step_holiday(date, holidays = us_hol) %>% 
++   step_mutate(
++     day_after_thx   = ifelse(month(date) == 11 & day(date) == 26, 1, 0),
++     day_before_xmas = ifelse(month(date) == 12 & day(date) == 24, 1, 0),
++     day_after_xmas  = ifelse(month(date) == 12 & day(date) == 26, 1, 0),
++     new_years_eve    = ifelse(month(date) == 12 & day(date) == 30, 1, 0),
++     case_weights     = ifelse(date >= ymd("2020-04-01"), 1, .1)
++   ) %>% 
++   step_date(date) %>% 
++   step_rm(date) 
+> 
+> glmnet_recipe <- 
++   cubist_recipe %>% 
++   step_dummy(all_nominal_predictors()) %>% 
++   step_zv(all_predictors(), -case_weights) %>% 
++   step_normalize(all_numeric_predictors(), -case_weights)
+> 
+> # ------------------------------------------------------------------------------
+> 
+> fit_cubist <- function(df) {
++   library(Cubist)
++   cubist(x = df[, !(names(df) %in% c("ridership", "case_weight"))],
++          y = df$ridership,
++          weights = df$case_weights,
++          committees = 50)
++ }
+> 
+> assess_cubist <- function(dat, model) {
++   library(tidymodels, quietly = TRUE)
++   x <- dat %>% select(-ridership)
++   preds <- predict(model, x)
++   tibble(.pred = preds, ridership = dat$ridership) %>% 
++     rmse(ridership, .pred)
++ }
+> 
+> cubist_weighted <- 
++   chi_rs %>% 
++   mutate(
++     recipe = map(splits, ~ prep(cubist_recipe, analysis(.x))),
++     analysis  = map(recipe, ~ juice(.x)),
++     assessment = map2(recipe, splits, ~ bake(.x, assessment(.y))),
++     model = future_map(analysis, ~ fit_cubist(.x)),
++     rmse = future_map2(assessment, model, assess_cubist)
++   ) %>% 
++   select(id, rmse) %>% 
++   unnest(cols = rmse) %>% 
++   inner_join(rs_dates, by = "id") %>% 
++   select(date, rmse = .estimate) %>% 
++   mutate(model = "cubist", method = "case weights")
+> 
+> 
+> cubist_recipe_prepped <- prep(cubist_recipe)
+> test_data <- cubist_recipe_prepped %>% bake(chi_test) %>%  select(-ridership)
+> final_cubist <- fit_cubist(juice(cubist_recipe_prepped))
+> cubist_weighted_test <-
++   tibble(
++     .pred = predict(final_cubist, test_data),
++     ridership = chi_test$ridership,
++     date = chi_test$date
++   ) %>% 
++   mutate(model = "cubist", method = "case weights", day = wday(date, label = TRUE))
+> 
+> # ------------------------------------------------------------------------------
+> 
+> 
+> fit_glmnet <- function(df) {
++   library(glmnet)
++   x <- df[, !(names(df) %in% c("ridership", "case_weights"))]
++   x <- as.matrix(x)
++   mod <- cv.glmnet(x, df$ridership, weights = df$case_weights)
++   
++   mod
++ }
+> 
+> assess_glmnet <- function(dat, model) {
++   library(tidymodels, quietly = TRUE)
++   library(glmnet)
++   x <- dat %>% select(-ridership, -case_weights)
++   x <- as.matrix(x)
++   preds <- predict(model, x)
++   tibble(.pred = preds[,1], ridership = dat$ridership) %>%
++     rmse(ridership, .pred)
++ }
+> 
+> glmnet_weighted <- 
++   chi_rs %>% 
++   mutate(
++     recipe = map(splits, ~ prep(glmnet_recipe, analysis(.x))),
++     analysis  = map(recipe, ~ juice(.x)),
++     assessment = map2(recipe, splits, ~ bake(.x, assessment(.y))),
++     model = future_map(analysis, ~ fit_glmnet(.x)),
++     rmse = future_map2(assessment, model, assess_glmnet)
++   ) %>% 
++   select(id, rmse) %>% 
++   unnest(cols = rmse) %>% 
++   inner_join(rs_dates, by = "id") %>% 
++   select(date, rmse = .estimate) %>% 
++   mutate(model = "glmnet", method = "case weights")
+> 
+> 
+> glmnet_recipe_prepped <- prep(glmnet_recipe)
+> test_data <- glmnet_recipe_prepped %>% bake(chi_test) %>%  select(-ridership, -case_weights)
+> final_glmnet <- fit_glmnet(juice(glmnet_recipe_prepped))
+> glmnet_weighted_test <-
++   tibble(
++     .pred = predict(final_glmnet, as.matrix(test_data))[,1],
++     ridership = chi_test$ridership,
++     date = chi_test$date
++   ) %>% 
++   mutate(model = "glmnet", method = "case weights", day = wday(date, label = TRUE))
+> 
+> 
+> # ------------------------------------------------------------------------------
+> 
+> case_weights <- 
++   bind_rows(glmnet_weighted, cubist_weighted) %>% 
++   filter(date > ymd("2020-04-01"))
+> case_weights_test <- bind_rows(glmnet_weighted_test, cubist_weighted_test)
+> 
+> save(case_weights, case_weights_test, file = "RData/case_weights.RData")
+> 
+> q("no")
+> proc.time()
+    user   system  elapsed 
+5579.095   56.197  500.681 
