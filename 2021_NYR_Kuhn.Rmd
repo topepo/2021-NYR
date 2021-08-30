@@ -1,0 +1,184 @@
+---
+title: "The Global Pandemic Ruined My Favorite Data Set"
+author: Max Kuhn
+date: "2021-09-10"
+output:
+  xaringan::moon_reader:
+    anchor_sections: FALSE
+    css: ["default", "css/theme.css", "css/fonts.css"]
+    seal: false 
+    lib_dir: libs
+    nature:
+      slideNumberFormat: |
+        <div class="progress-bar-container">
+          <div class="progress-bar" style="width: calc(%current% / %total% * 100%);">
+          </div>
+        </div>
+      highlightStyle: solarized-light
+      highlightLanguage: ["r", "css", "yaml"]
+      highlightLines: true
+      countIncrementalSlides: false
+      ratio: "16:9"
+---
+
+class: title-slide, left, middle
+background-position: 85% 50%
+background-size: 30%
+background-color: #F9F8F3
+
+.pull-left[
+
+# `r rmarkdown::metadata$title`
+
+### `r rmarkdown::metadata$author`
+
+### `r rmarkdown::metadata$date`
+]
+
+```{r startup, include = FALSE}
+library(doMC)
+registerDoMC(cores = 20)
+library(tidymodels)
+library(readr)
+library(lubridate)
+library(janitor)
+library(slider)
+tidymodels_prefer()
+thm <- theme_bw() + 
+  theme(
+    panel.background = element_rect(fill = "transparent", colour = NA), 
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    legend.position = "top",
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.key = element_rect(fill = "transparent", colour = NA)
+  )
+theme_set(thm)
+```
+
+```{r import, include = FALSE, eval = FALSE}
+load("RData/stations.RData")
+stations <- 
+  stations %>% 
+  select(name, station_id)
+
+exclude <- c("Cermak-Chinatown", "95th/Dan Ryan", "Randolph/Wabash", "69th", 
+             "Morgan", "Cermak-McCormick Place", "Sox-35th", "79th", "87th", 
+             "63rd", "Madison/Wabash", "Conservatory", "Washington/Wabash", 
+             "Oakton-Skokie", "Homan")
+
+raw_entries <-
+  # Downloaded on 2021-08-29
+  read_delim("entries.tsv", delim = "\t") %>%
+  select(-daytype, -stationname) %>%
+  ## In thousands
+  mutate(rides = rides/1000) %>%
+  mutate(date = mdy(date)) %>%
+  mutate(station_id = paste0("s_", station_id)) %>%
+  inner_join(stations, by = "station_id") %>%
+  select(name, rides, date) %>%
+  filter(!(name %in% exclude)) %>% 
+  pivot_wider(id_cols = "date", names_from = "name", values_from = "rides", values_fn = mean) %>% 
+  clean_names() %>% 
+  arrange(date)
+lags <- 
+  raw_entries %>%
+   mutate(real_date = date,
+          date = date + days(14)) %>%
+   select(-real_date)
+true_values <-
+   raw_entries %>%
+   dplyr::rename(ridership = clark_lake) %>%
+   select(date, ridership)
+
+chicago <- full_join(true_values, lags, by = "date")
+chicago <- chicago[complete.cases(chicago),]
+```
+
+
+```{r before-times}
+chicago %>%
+  slide_period_dfr(
+    chicago$date, 
+    .period = "week", 
+    ~ tibble(date = min(.x$date), rides = sum(.x$ridership * 1000))
+  ) %>%
+  ggplot(aes(date, rides)) +
+  geom_line() + 
+  scale_x_date(date_breaks = "5 years", date_minor_breaks = "1 year")
+```
+```{r split}
+test_days <- ymd("2021-05-18") + days(0:13)
+
+chi_train <- chicago %>% filter(date < min(test_days))
+chi_test  <- chicago %>% filter(date >= min(test_days))
+```
+
+```{r resamples}
+chi_rs <-
+  chi_train %>%
+  sliding_period(
+    index = "date",  
+    period = "week",
+    lookback = 52 * 18,
+    assess_stop = 2,
+    step = 2
+  )
+```
+
+
+---
+layout: false
+class: inverse, middle, center
+
+# [`tidymodels.org`](https://www.tidymodels.org/)
+
+# _Tidy Modeling with R_ ([`tmwr.org`](https://www.tmwr.org/))
+
+
+
+---
+# Ideas
+
+* BAU (business as usual)
+* Just new data
+* Interactions
+* Case weights
+
+
+---
+# Feature engineering
+
+```{r recipe}
+# define a few holidays
+us_hol <- 
+  listHolidays() %>% 
+  str_subset("(^US)|(Easter)")
+
+cubst_recipe <- 
+  recipe(ridership ~ ., data = chi_train) %>% 
+  step_holiday(date, holidays = us_hol) %>% 
+  step_mutate(
+    day_after_thx   = ifelse(month(date) == 11 & day(date) == 26, 1, 0),
+    day_before_xmas = ifelse(month(date) == 12 & day(date) == 24, 1, 0),
+    day_after_xmas  = ifelse(month(date) == 12 & day(date) == 26, 1, 0),
+    new_years_eve    = ifelse(month(date) == 12 & day(date) == 30, 1, 0)
+  ) %>% 
+  step_date(date) %>% 
+  step_rm(date) 
+  
+reg_recipe <- 
+  cubst_recipe %>% 
+  step_zv(all_predictors()) %>% 
+  step_dummy(all_nominal_predictors()) %>% 
+  step_normalze(all_numeric_predictors())
+
+```
+
+
+---
+# Thanks
+
+Huge thanks to the R-Ladies organizers for the invitation to speak and putting up with my scheduling woes. 
+
+Special thanks to the tidymodels team (Davis Vaughan, Julia Silge, and Hanna Frick) as well as Alison Hill.
+
