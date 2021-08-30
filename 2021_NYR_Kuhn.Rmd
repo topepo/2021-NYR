@@ -53,6 +53,12 @@ thm <- theme_bw() +
     legend.key = element_rect(fill = "transparent", colour = NA)
   )
 theme_set(thm)
+
+load("RData/chicago.RData")
+load("RData/all_data.RData")
+load("RData/covid_data.RData")
+load("RData/interactions.RData")
+
 ```
 
 ```{r import, include = FALSE, eval = FALSE}
@@ -174,6 +180,51 @@ reg_recipe <-
 
 ```
 
+
+```{r resampling}
+rs_results <- bind_rows(all_data, covid_data, interactions)
+
+rs_results %>% 
+  filter(date >= ymd("2020-04-01")) %>% 
+  ggplot(aes(date, rmse, col = method)) + 
+  geom_point() +
+  geom_line() +
+  facet_wrap(~ model)
+```
+
+
+```{r testing}
+cols <- c(Sun = "red", Mon = "black", Tue = "black", Wed = "black", Thu = "black", Fri = "black", Sat = "red")
+
+test_results <- bind_rows(all_data_test, covid_data_test, interactions_test)
+
+min_rides <- min(chicago$ridership)
+
+test_results_trunc <- 
+  test_results %>% 
+  mutate(
+    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
+  )
+
+test_results %>% 
+  group_by(model, method) %>% 
+  rmse(ridership, .pred) %>% 
+  arrange(.estimate)
+
+test_results %>% 
+  ggplot(aes(date)) + 
+  geom_line(aes(y = .pred * 1000)) + 
+  facet_grid(model ~ method) +
+  geom_point(aes(y = ridership  * 1000, col = day)) +
+  scale_color_manual(values = cols)
+```
+
+```{r testing-rmse}
+test_results %>% 
+  group_by(model, method) %>% 
+  rmse(ridership, .pred) %>% 
+  arrange(.estimate)
+```
 
 ---
 # Thanks

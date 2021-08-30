@@ -132,8 +132,7 @@ glmnet_everything_test <-
   mutate(
     model = "glmnet",
     method = "all data",
-    day = wday(date, label = TRUE),
-    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
+    day = wday(date, label = TRUE)
   )
 
 glmnet_everything <- 

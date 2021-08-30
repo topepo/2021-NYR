@@ -33,7 +33,7 @@ chi_rs <-
 
 rs_dates <- 
   chi_rs %>% 
-  mutate(date = map(splits, ~ min(analysis(.x)$date))) %>% 
+  mutate(date = map(splits, ~ min(assessment(.x)$date))) %>% 
   select(id, date) %>% 
   unnest(cols = date)
 
@@ -130,8 +130,7 @@ glmnet_covid_test <-
   mutate(
     model = "glmnet",
     method = "covid data only",
-    day = wday(date, label = TRUE),
-    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
+    day = wday(date, label = TRUE)
   )
 
 glmnet_covid <- 

@@ -150,8 +150,7 @@ glmnet_interactions_test <-
   mutate(
     model = "glmnet",
     method = "interactions",
-    day = wday(date, label = TRUE),
-    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
+    day = wday(date, label = TRUE)
   )
 
 glmnet_interactions <- 
