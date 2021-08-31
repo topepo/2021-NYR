@@ -87,7 +87,7 @@ Predictors: Lag 14 data from C&L and other stations, date-based features, weathe
 
 Notes: 
 
-* Data a re highly bimodal (weekend vs weekday) 
+* Data are highly bimodal (weekend vs weekday) 
 * _Previously_, RMSE's around 1.8-2.0 (x rides/1000) were common. 
 
 ---
@@ -135,15 +135,23 @@ weekly_data %>%
 ```
 
 ---
+layout: false
+class: inverse, middle, center
+
+```{r tweet, echo = FALSE, fig.align='center', out.width="50%"}
+knitr::include_graphics("Screen Shot 2021-08-30 at 1.31.53 PM.png")
+```
+
+---
 # The problems
 
 Obviously, the patterns and scale are completely different. 
 
 The scale change is a subtle issue. 
 
- - The data pre- and post-COVID are in the same units
+ - The COVID and pre-COVID data are in the same units
  
- - Should we compare root mean squared error values between data reaching 10<sup>5.5</sup> with data topping out at 10<sup>3.2</sup>(ish)?
+ - Should we compare root mean squared error values between data reaching 10<sup>5.5</sup> with data topping out at 10<sup>3.6</sup>(ish)?
  
 We'll also get a feel for the results via visual inspection of the predictions. 
 
@@ -184,7 +192,7 @@ chicago %>%
 ---
 # Resampling results
 
-```{r resampling, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=12, fig.height=5, fig.alt = "A time series plot of the resamplec RMSE values."}
+```{r resampling, warning = FALSE, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=12, fig.height=5, fig.alt = "A time series plot of the resampled RMSE values."}
 rs_results <- 
   bind_rows(all_data, covid_data, interactions, case_weights) %>% 
   mutate(method = factor(method, levels = ordering))
@@ -198,6 +206,9 @@ rs_results %>%
 ```
 
 
+Side note: the `glmnet` models required _a lot_ of regularization (penalties between 5-10). 
+
+
 ---
 # Test set results
 
@@ -206,6 +217,7 @@ rs_results %>%
 test_results <- 
   bind_rows(all_data_test, covid_data_test, interactions_test, case_weights_test) %>% 
   mutate(method = factor(method, levels = ordering))
+pred_rng <- extendrange(test_results$.pred * 1000)
 
 test_results %>% 
   filter(method %in% c("all data")) %>% 
@@ -214,7 +226,8 @@ test_results %>%
   facet_grid(model ~ method, drop = FALSE) +
   geom_point(aes(y = ridership  * 1000, col = day)) +
   scale_color_manual(values = cols) +
-  ylab("rides")
+  ylab("rides") + 
+  ylim(pred_rng)
 ```
 
 
@@ -234,7 +247,8 @@ test_results %>%
   facet_grid(model ~ method, drop = FALSE) +
   geom_point(aes(y = ridership  * 1000, col = day)) +
   scale_color_manual(values = cols) +
-  ylab("rides")
+  ylab("rides") + 
+  ylim(pred_rng)
 ```
 
 
@@ -254,7 +268,8 @@ test_results %>%
   facet_grid(model ~ method, drop = FALSE) +
   geom_point(aes(y = ridership  * 1000, col = day)) +
   scale_color_manual(values = cols) +
-  ylab("rides")
+  ylab("rides") + 
+  ylim(pred_rng)
 ```
 
 
@@ -273,29 +288,13 @@ test_results %>%
   facet_grid(model ~ method, drop = FALSE) +
   geom_point(aes(y = ridership  * 1000, col = day)) +
   scale_color_manual(values = cols) +
-  ylab("rides")
+  ylab("rides") + 
+  ylim(pred_rng)
 ```
 
 
 ---
-# Test set results (with some correction)
-
-```{r testing-corrected, echo = FALSE, out.width = '90%', fig.align='center', dev = 'svg', dev.args = list(bg = "transparent"), fig.width=10, fig.height=5, fig.alt = "A time series of the test data and their predictions."}
-min_rides <- min(chicago$ridership)
-test_results %>% 
-  mutate(
-    .pred = ifelse(.pred <= min_rides, min_rides, .pred)
-  ) %>% 
-  ggplot(aes(date)) + 
-  geom_line(aes(y = .pred * 1000)) + 
-  facet_grid(model ~ method) +
-  geom_point(aes(y = ridership  * 1000, col = day)) +
-  scale_color_manual(values = cols) +
-  ylab("rides")
-```
-
----
-# Sorted results (uncorrected)
+# Sorted results 
 
 ```{r testing-res}
 test_results %>% 
@@ -311,16 +310,16 @@ test_results %>%
 
 * The resampling results indicate that the best strategy might change over time. 
 
-* The regularized linear regression results are appealing because of their simplicity and stability...
+  - Also, the test and resampling results are fairly discordant. 
 
-... except for those wildly negative predictions. 
+* The regularized linear regression results are appealing because of their simplicity and stability. It took some work to train these since they were producing negative ridership estimates (unless the penalty was very large)
 
 * There are model-to-model differences so we should probably look at others too. 
 
 ---
 # Thanks
 
-Huge thanks to the organizers for the invitation to speak and putting up with my scheduling woes. 
+Huge thanks to the organizers for the invitation to speak. 
 
 Special thanks to the tidymodels team (Davis Vaughan, Julia Silge, and Hanna Frick) as well as Alison Hill.
 

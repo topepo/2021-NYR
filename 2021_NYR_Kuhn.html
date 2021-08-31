@@ -42,7 +42,7 @@ Predictors: Lag 14 data from C&amp;L and other stations, date-based features, we
 
 Notes: 
 
-* Data a re highly bimodal (weekend vs weekday) 
+* Data are highly bimodal (weekend vs weekday) 
 * _Previously_, RMSE's around 1.8-2.0 (x rides/1000) were common. 
 
 ---
@@ -62,15 +62,21 @@ Notes:
 &lt;img src="2021_NYR_Kuhn_files/figure-html/covid-data-1.svg" title="A time series plot of the data after 2020-04-01." alt="A time series plot of the data after 2020-04-01." width="90%" style="display: block; margin: auto;" /&gt;
 
 ---
+layout: false
+class: inverse, middle, center
+
+&lt;img src="Screen Shot 2021-08-30 at 1.31.53 PM.png" width="50%" style="display: block; margin: auto;" /&gt;
+
+---
 # The problems
 
 Obviously, the patterns and scale are completely different. 
 
 The scale change is a subtle issue. 
 
- - The data pre- and post-COVID are in the same units
+ - The COVID and pre-COVID data are in the same units
  
- - Should we compare root mean squared error values between data reaching 10&lt;sup&gt;5.5&lt;/sup&gt; with data topping out at 10&lt;sup&gt;3.2&lt;/sup&gt;(ish)?
+ - Should we compare root mean squared error values between data reaching 10&lt;sup&gt;5.5&lt;/sup&gt; with data topping out at 10&lt;sup&gt;3.6&lt;/sup&gt;(ish)?
  
 We'll also get a feel for the results via visual inspection of the predictions. 
 
@@ -112,7 +118,10 @@ chicago %&gt;%
 ---
 # Resampling results
 
-&lt;img src="2021_NYR_Kuhn_files/figure-html/resampling-1.svg" title="A time series plot of the resamplec RMSE values." alt="A time series plot of the resamplec RMSE values." width="90%" style="display: block; margin: auto;" /&gt;
+&lt;img src="2021_NYR_Kuhn_files/figure-html/resampling-1.svg" title="A time series plot of the resampled RMSE values." alt="A time series plot of the resampled RMSE values." width="90%" style="display: block; margin: auto;" /&gt;
+
+
+Side note: the `glmnet` models required _a lot_ of regularization (penalties between 5-10). 
 
 
 ---
@@ -140,12 +149,7 @@ chicago %&gt;%
 
 
 ---
-# Test set results (with some correction)
-
-&lt;img src="2021_NYR_Kuhn_files/figure-html/testing-corrected-1.svg" title="A time series of the test data and their predictions." alt="A time series of the test data and their predictions." width="90%" style="display: block; margin: auto;" /&gt;
-
----
-# Sorted results (uncorrected)
+# Sorted results 
 
 
 ```r
@@ -161,14 +165,14 @@ test_results %&gt;%
 ## # A tibble: 8 × 3
 ##   model  method           rmse
 ##   &lt;chr&gt;  &lt;fct&gt;           &lt;dbl&gt;
-## 1 cubist case weights    0.693
-## 2 glmnet interactions    1.16 
-## 3 glmnet covid data only 1.43 
-## 4 cubist all data        1.70 
-## 5 cubist interactions    1.90 
-## 6 cubist covid data only 2.10 
-## 7 glmnet all data        2.13 
-## 8 glmnet case weights    2.19
+## 1 glmnet case weights    0.519
+## 2 glmnet covid data only 0.581
+## 3 cubist case weights    0.693
+## 4 glmnet interactions    1.16 
+## 5 glmnet all data        1.16 
+## 6 cubist all data        1.70 
+## 7 cubist interactions    1.90 
+## 8 cubist covid data only 2.10
 ```
 
 ---
@@ -176,16 +180,16 @@ test_results %&gt;%
 
 * The resampling results indicate that the best strategy might change over time. 
 
-* The regularized linear regression results are appealing because of their simplicity and stability...
+  - Also, the test and resampling results are fairly discordant. 
 
-... except for those wildly negative predictions. 
+* The regularized linear regression results are appealing because of their simplicity and stability. It took some work to train these since they were producing negative ridership estimates (unless the penalty was very large)
 
 * There are model-to-model differences so we should probably look at others too. 
 
 ---
 # Thanks
 
-Huge thanks to the organizers for the invitation to speak and putting up with my scheduling woes. 
+Huge thanks to the organizers for the invitation to speak. 
 
 Special thanks to the tidymodels team (Davis Vaughan, Julia Silge, and Hanna Frick) as well as Alison Hill.
 

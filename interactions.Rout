@@ -164,3 +164,112 @@ Loading required package: parallel
 +                   neighbors = c(0, 3, 6, 9)) 
 > cubist_tune <- 
 +   tune_grid(cubist_workflow, resamples = chi_rs, grid = cubist_grid) 
+> 
+> cubist_best <- select_best(cubist_tune, metric = "rmse")
+> 
+> cubist_interactions_test <- 
++   cubist_workflow %>% 
++   finalize_workflow(cubist_best) %>% 
++   fit(chi_train) %>% 
++   predict(chi_test) %>% 
++   bind_cols(chi_test %>% select(date, ridership)) %>% 
++   mutate(model = "cubist", method = "interactions", day = wday(date, label = TRUE))
+> 
+> cubist_interactions <- 
++   cubist_tune %>% 
++   collect_metrics(summarize = FALSE) %>% 
++   filter(.metric == "rmse") %>% 
++   inner_join(cubist_best, by = c("committees", "neighbors", ".config")) %>% 
++   inner_join(rs_dates, by = "id") %>% 
++   select(date, rmse = .estimate) %>% 
++   mutate(model = "cubist", method = "interactions")
+> 
+> 
+> # ------------------------------------------------------------------------------
+> 
+> glmnet_spec <- 
++   linear_reg(penalty = tune(), mixture = tune()) %>% 
++   set_mode("regression") %>% 
++   set_engine("glmnet") 
+> 
+> glmnet_workflow <- 
++   workflow() %>% 
++   add_recipe(glmnet_recipe) %>% 
++   add_model(glmnet_spec) 
+> 
+> glmnet_grid <-
++   tidyr::crossing(
++     penalty = 10 ^ seq(-1, 2, length.out = 20),
++     mixture = seq(0.05, 0.95, length = 11)
++   )
+> 
+> glmnet_tune <- 
++   tune_grid(glmnet_workflow, resamples = chi_rs, grid = glmnet_grid) 
+! Slice01: internal: A correlation computation is required, but `estimate` is const...
+! Slice04: internal: A correlation computation is required, but `estimate` is const...
+! Slice02: internal: A correlation computation is required, but `estimate` is const...
+! Slice11: internal: A correlation computation is required, but `estimate` is const...
+! Slice08: internal: A correlation computation is required, but `estimate` is const...
+! Slice09: internal: A correlation computation is required, but `estimate` is const...
+! Slice05: internal: A correlation computation is required, but `estimate` is const...
+! Slice06: internal: A correlation computation is required, but `estimate` is const...
+! Slice12: internal: A correlation computation is required, but `estimate` is const...
+! Slice18: internal: A correlation computation is required, but `estimate` is const...
+! Slice07: internal: A correlation computation is required, but `estimate` is const...
+! Slice03: internal: A correlation computation is required, but `estimate` is const...
+! Slice20: internal: A correlation computation is required, but `estimate` is const...
+! Slice17: internal: A correlation computation is required, but `estimate` is const...
+! Slice10: internal: A correlation computation is required, but `estimate` is const...
+! Slice14: internal: A correlation computation is required, but `estimate` is const...
+! Slice15: internal: A correlation computation is required, but `estimate` is const...
+! Slice16: internal: A correlation computation is required, but `estimate` is const...
+! Slice13: internal: A correlation computation is required, but `estimate` is const...
+! Slice19: internal: A correlation computation is required, but `estimate` is const...
+! Slice21: internal: A correlation computation is required, but `estimate` is const...
+! Slice22: internal: A correlation computation is required, but `estimate` is const...
+! Slice23: internal: A correlation computation is required, but `estimate` is const...
+! Slice24: internal: A correlation computation is required, but `estimate` is const...
+! Slice25: internal: A correlation computation is required, but `estimate` is const...
+! Slice26: internal: A correlation computation is required, but `estimate` is const...
+! Slice27: internal: A correlation computation is required, but `estimate` is const...
+! Slice28: internal: A correlation computation is required, but `estimate` is const...
+! Slice30: internal: A correlation computation is required, but `estimate` is const...
+! Slice29: internal: A correlation computation is required, but `estimate` is const...
+> 
+> 
+> glmnet_best <- select_best(glmnet_tune, metric = "rmse")
+> 
+> glmnet_interactions_test <-
++   glmnet_workflow %>%
++   finalize_workflow(glmnet_best) %>%
++   fit(chi_train) %>%
++   predict(chi_test) %>%
++   bind_cols(chi_test %>% select(date, ridership)) %>%
++   mutate(
++     model = "glmnet",
++     method = "interactions",
++     day = wday(date, label = TRUE)
++   )
+> 
+> glmnet_interactions <- 
++   glmnet_tune %>% 
++   collect_metrics(summarize = FALSE) %>% 
++   filter(.metric == "rmse") %>% 
++   inner_join(glmnet_best, by = c("penalty", "mixture", ".config")) %>% 
++   inner_join(rs_dates, by = "id") %>% 
++   select(date, rmse = .estimate) %>% 
++   mutate(model = "glmnet", method = "interactions")
+> 
+> # ------------------------------------------------------------------------------
+> 
+> interactions <- 
++   bind_rows(glmnet_interactions, cubist_interactions) %>% 
++   filter(date > ymd("2020-04-01"))
+> interactions_test <- bind_rows(glmnet_interactions_test, cubist_interactions_test)
+> 
+> save(interactions, interactions_test, file = "RData/interactions.RData")
+> 
+> q("no")
+> proc.time()
+     user    system   elapsed 
+37832.138   788.145  2581.388 

@@ -115,12 +115,14 @@ cubist_weighted_test <-
 
 # ------------------------------------------------------------------------------
 
-
+# Since tidymodels doesn't currently use case weights, we make some choices
+# about parameter ranges. The range was mostly chosen based on how many negative
+# predictions were made. 
 fit_glmnet <- function(df) {
   library(glmnet)
   x <- df[, !(names(df) %in% c("ridership", "case_weights"))]
   x <- as.matrix(x)
-  mod <- cv.glmnet(x, df$ridership, weights = df$case_weights)
+  mod <- cv.glmnet(x, df$ridership, weights = df$case_weights, alpha = .1, lambda = 10 ^ seq(0.5, 2, length.out = 20))
   
   mod
 }
