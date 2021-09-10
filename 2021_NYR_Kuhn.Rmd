@@ -2,6 +2,8 @@
 title: "The Global Pandemic Ruined My Favorite Data Set"
 author: Max Kuhn
 date: "2021-09-10"
+event: New York R Conference
+url: https://github.com/topepo/2021-NYR
 output:
   xaringan::moon_reader:
     anchor_sections: FALSE
@@ -33,6 +35,10 @@ background-color: #F9F8F3
 ### `r rmarkdown::metadata$author`
 
 ### `r rmarkdown::metadata$date`
+
+### `r rmarkdown::metadata$event`
+
+### `r rmarkdown::metadata$url`
 ]
 .pull-right[
 ```{r pic, echo = FALSE, fig.align='center', out.width="100%"}
